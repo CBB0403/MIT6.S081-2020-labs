@@ -95,3 +95,16 @@ sys_uptime(void)
   release(&tickslock);
   return xticks;
 }
+
+// 新增trace系统调用，参考sys_kill，读取参数，并记录到proc结构体中
+uint64 sys_trace(void) {
+  int mask;
+  // get args from user space
+  if (argint(0, &mask) < 0) {
+    return -1;
+  }
+  myproc()->trace_mask = mask;
+  return 0;
+}
+
+// 新增sysinfo系统调用

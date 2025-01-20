@@ -104,7 +104,16 @@ extern uint64 sys_unlink(void);
 extern uint64 sys_wait(void);
 extern uint64 sys_write(void);
 extern uint64 sys_uptime(void);
+extern uint64 sys_trace(void);
+// extern uint64 sys_sysinfo(void);
 
+// static 关键字：
+// static 关键字用于将变量或函数的作用域限制在声明它的文件内。对于数组 syscalls，这意味着它只能在 syscall.c 文件中访问。
+// 数组类型：
+// uint64 (*syscalls[])(void) 声明了一个数组，该数组的元素是返回类型为 uint64、无参数的函数指针。
+// 数组初始化：
+// 数组使用索引初始化器进行初始化。索引初始化器 [SYS_fork] 表示将 sys_fork 函数指针存储在数组的 SYS_fork 索引位置。
+// 这种初始化方式使得数组的每个元素都可以通过系统调用号（如 SYS_fork）直接访问对应的系统调用处理函数（如 sys_fork）。
 static uint64 (*syscalls[])(void) = {
 [SYS_fork]    sys_fork,
 [SYS_exit]    sys_exit,
@@ -127,6 +136,35 @@ static uint64 (*syscalls[])(void) = {
 [SYS_link]    sys_link,
 [SYS_mkdir]   sys_mkdir,
 [SYS_close]   sys_close,
+[SYS_trace]   sys_trace,
+};
+
+// static 关键字将数组 syscallnames 的作用域限制在声明它的文件内
+// 声明了一个数组，该数组的元素是指向字符的指针，即字符串
+static char *syscall_names[] = {
+[SYS_fork]    "fork",
+[SYS_exit]    "exit",
+[SYS_wait]    "wait",
+[SYS_pipe]    "pipe",
+[SYS_read]    "read",
+[SYS_kill]    "kill",
+[SYS_exec]    "exec",
+[SYS_fstat]   "fstat",
+[SYS_chdir]   "chdir",
+[SYS_dup]     "dup",
+[SYS_getpid]  "getpid",
+[SYS_sbrk]    "sbrk",
+[SYS_sleep]   "sleep",
+[SYS_uptime]  "uptime",
+[SYS_open]    "open",
+[SYS_write]   "write",
+[SYS_mknod]   "mknod",
+[SYS_unlink]  "unlink",
+[SYS_link]    "link",
+[SYS_mkdir]   "mkdir",
+[SYS_close]   "close",
+[SYS_trace]   "trace",
+[SYS_sysinfo] "sysinfo",
 };
 
 void
@@ -135,9 +173,14 @@ syscall(void)
   int num;
   struct proc *p = myproc();
 
+  // 执行 ecall 指令前会將system call的编号存于regitster a7 中，所以 num 代表的是系统调用的编号
   num = p->trapframe->a7;
   if(num > 0 && num < NELEM(syscalls) && syscalls[num]) {
     p->trapframe->a0 = syscalls[num]();
+    // TODO: 如果trace设置了，且就是当前调用的系统调用，那么打印出来
+    if ((p->trace_mask) & (1 << num)) {
+      printf("%d: syscall %s -> %d\n", p->pid, syscall_names[num], p->trapframe->a0);
+    }
   } else {
     printf("%d %s: unknown sys call %d\n",
             p->pid, p->name, num);

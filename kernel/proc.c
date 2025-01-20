@@ -274,6 +274,8 @@ fork(void)
     return -1;
   }
   np->sz = p->sz;
+  // TODO: 这里需要修改fork()函数: trace mask from the parent to the child process
+  np->trace_mask = p->trace_mask;
 
   np->parent = p;
 
