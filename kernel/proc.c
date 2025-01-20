@@ -695,3 +695,18 @@ procdump(void)
     printf("\n");
   }
 }
+
+// TODO: To collect the number of processes, add a function to kernel/proc.c
+// 参考procdump()函数，遍历proc数组，统计state不为UNUSED的proc数量
+// 并且注意到，这里没有.h文件，因此如果要外部能够调用这个函数，需要在defs.h中声明
+// 或者在当前文件的开头加上extern uint64 usedproc(void);
+uint64 usedproc(void) {
+  struct proc *p;
+  uint64 used = 0;
+
+  for(p = proc; p < &proc[NPROC]; p++)
+    if(p->state != UNUSED)
+      used++;
+
+  return used;
+}

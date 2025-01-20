@@ -80,3 +80,23 @@ kalloc(void)
     memset((char*)r, 5, PGSIZE); // fill with junk
   return (void*)r;
 }
+
+// TODO: To collect the amount of free memory, add a function to kernel/kalloc.c
+// 参考kalloc()函数，遍历freelist链表，统计空闲页的数量
+// 并且注意到，这里没有.h文件，因此如果要外部能够调用这个函数，需要在defs.h中声明
+// 或者在当前文件的开头加上extern uint64 freemem(void);
+uint64 freemem(void) {
+  struct run *r;
+  uint64 freePage = 0;
+
+  acquire(&kmem.lock);
+  r = kmem.freelist;
+  while(r) {
+    freePage++;
+    r = r->next;
+  }  
+  release(&kmem.lock);
+
+  // 每个页面大小为4096字节，也就是4k，所以空闲内存大小为freePage * 4k = freePage << 12
+  return freePage << 12;
+}

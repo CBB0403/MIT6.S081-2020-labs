@@ -105,7 +105,7 @@ extern uint64 sys_wait(void);
 extern uint64 sys_write(void);
 extern uint64 sys_uptime(void);
 extern uint64 sys_trace(void);
-// extern uint64 sys_sysinfo(void);
+extern uint64 sys_sysinfo(void);
 
 // static 关键字：
 // static 关键字用于将变量或函数的作用域限制在声明它的文件内。对于数组 syscalls，这意味着它只能在 syscall.c 文件中访问。
@@ -137,6 +137,7 @@ static uint64 (*syscalls[])(void) = {
 [SYS_mkdir]   sys_mkdir,
 [SYS_close]   sys_close,
 [SYS_trace]   sys_trace,
+[SYS_sysinfo] sys_sysinfo,
 };
 
 // static 关键字将数组 syscallnames 的作用域限制在声明它的文件内
