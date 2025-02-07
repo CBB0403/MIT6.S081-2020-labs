@@ -440,3 +440,44 @@ copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
     return -1;
   }
 }
+
+// 需要在defs.h定义vmprint，才能供exec.c调用
+// vmprint 接收 pagetable_t 型別的參數，並打印如下列格式:
+
+// page table 0x0000000087f6e000
+// ..0: pte 0x0000000021fda801 pa 0x0000000087f6a000
+// .. ..0: pte 0x0000000021fda401 pa 0x0000000087f69000
+// .. .. ..0: pte 0x0000000021fdac1f pa 0x0000000087f6b000
+// .. .. ..1: pte 0x0000000021fda00f pa 0x0000000087f68000
+// .. .. ..2: pte 0x0000000021fd9c1f pa 0x0000000087f67000
+// ..255: pte 0x0000000021fdb401 pa 0x0000000087f6d000
+// .. ..511: pte 0x0000000021fdb001 pa 0x0000000087f6c000
+// .. .. ..510: pte 0x0000000021fdd807 pa 0x0000000087f76000
+// .. .. ..511: pte 0x0000000020001c0b pa 0x0000000080007000
+
+// 第一行為 vmprint 的輸入參數值，接著以深度優先的方式，打印出頁表的所有 PTE，" .." 表達 page directory 的層別
+// 我們參考 freewalk 的实现，觀察後可以發現
+// - 若 PTE 存在且 Valid bit 被設置
+//   - 若 PTE 不可讀 & 不可寫 & 不可執行，代表為第一/二級的頁表
+//   - 反之只要 WRX 其中一個 bit 被設置，就是最後一級的頁表
+void vmprint(pagetable_t pagetable, int level) {
+  if (level == 0)
+    printf("page table %p\n", pagetable);
+
+  // iterate 512 PTEs
+  for (int i = 0; i < 512; i++) {
+    pte_t pte = pagetable[i];
+    if (pte & PTE_V) {
+      uint64 pa = PTE2PA(pte);
+      printf("..");
+      for (int j = 0; j < level; j++) {
+        printf(" ..");
+      }
+      printf("%d: pte %p pa %p\n",i, pte, pa);
+
+      // PTE without any WRX bit set points to low-level page table
+      if ((pte & (PTE_W|PTE_R|PTE_X)) == 0)
+        vmprint((pagetable_t)pa, level + 1);
+    }
+  }
+}

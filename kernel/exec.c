@@ -116,6 +116,11 @@ exec(char *path, char **argv)
   p->trapframe->sp = sp; // initial stack pointer
   proc_freepagetable(oldpagetable, oldsz);
 
+  // Implement vmprint function to print the first processs's pagetable
+  // 第一个用户进程将会调用userinit，从而调用allocproc，调用allocpid提供pid
+  // 而全局变量nextpid的默认值为1，因此这里判断的就是第一个用户进程
+  if(p->pid==1) vmprint(p->pagetable, 0);
+
   return argc; // this ends up in a0, the first argument to main(argc, argv)
 
  bad:
