@@ -292,6 +292,11 @@ userinit(void)
   uvminit(p->pagetable, initcode, sizeof(initcode));
   p->sz = PGSIZE;
 
+  // 第一個 user 進程初始化時，會配置一個 page 載入 initcode
+  // 進程的 kernel page table 需要保存這個映射關係
+  // map first PGSIZE va to process's kernel page table
+  kvmcopyuvm(p->pagetable, p->k_pagetable, 0, PGSIZE);
+
   // prepare for the very first "return" from kernel to user.
   p->trapframe->epc = 0;      // user program counter
   p->trapframe->sp = PGSIZE;  // user stack pointer
@@ -304,6 +309,8 @@ userinit(void)
   release(&p->lock);
 }
 
+// growproc 透過 uvmalloc 及 uvmdealloc 控制進程的記憶體空間
+// kernel page table 只要隨著空間的擴張或縮小更新即可
 // Grow or shrink user memory by n bytes.
 // Return 0 on success, -1 on failure.
 int
@@ -317,8 +324,22 @@ growproc(int n)
     if((sz = uvmalloc(p->pagetable, sz, sz + n)) == 0) {
       return -1;
     }
+    // 扩大进程的内存空间时，需要将用户空间的映射关系复制到内核空间
+    if(kvmcopyuvm(p->pagetable, p->k_pagetable, sz - n, n) < 0) {
+      return -1;
+    }
   } else if(n < 0){
-    sz = uvmdealloc(p->pagetable, sz, sz + n);
+    uvmdealloc(p->pagetable, sz, sz + n);
+    // 缩小进程的内存空间时，需要将内核空间的映射关系释放
+    // uvmdealloc 和 kvmdealloc 的主要区别在于 uvmunmap 的 do_free 参数：
+    // uvmdealloc 调用 uvmunmap 时，do_free 为 1，表示释放虚拟地址空间的同时，也释放对应的物理内存（调用 kfree）。
+    // kvmdealloc 调用 uvmunmap 时，do_free 为 0，表示只释放虚拟地址空间，不释放对应的物理内存。
+    // 之所以这样设计，是因为用户进程的虚拟地址空间和内核虚拟地址空间共享同一块物理内存。
+    // 当用户进程释放虚拟地址空间时，它实际上是将物理内存交还给系统，因此需要调用 kfree 释放物理内存。
+    // 而当内核释放虚拟地址空间时，它只是释放了对用户进程物理内存的映射，物理内存仍然属于用户进程，因此不能调用 kfree 释放物理内存，否则会导致 double free。
+    // 简单来说，uvmdealloc 负责释放用户进程的虚拟地址空间和物理内存，而 kvmdealloc 只负责释放内核页表中用户进程的映射关系，不释放物理内存。
+    // 如果kvmdealloc再调用一次kfree，那就会尝试重复释放，已经释放过的物理内存，会导致 double free 错误。
+    sz = kvmdealloc(p->k_pagetable, sz, sz + n);
   }
   p->sz = sz;
   return 0;
@@ -345,6 +366,14 @@ fork(void)
     return -1;
   }
   np->sz = p->sz;
+
+  // fork 系統呼叫會配置子進程 np，並將父進程 page table 及暫存器的內容，複製給子進程
+  // copy user page table mappings to kernel page table
+  if(kvmcopyuvm(np->pagetable, np->k_pagetable, 0, np->sz) < 0){
+    freeproc(np);
+    release(&np->lock);
+    return -1;
+  }
 
   np->parent = p;
 

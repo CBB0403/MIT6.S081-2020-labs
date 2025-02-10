@@ -138,7 +138,7 @@ kvmpa(uint64 va)
   // kvmpa 改用進程自己的 kernel page table，來轉換位於 kernel stack 的虛擬地址
   struct proc *p = myproc();
   pte = walk(p->k_pagetable, va, 0);
-  
+
   if(pte == 0)
     panic("kvmpa");
   if((*pte & PTE_V) == 0)
@@ -240,6 +240,10 @@ uvmalloc(pagetable_t pagetable, uint64 oldsz, uint64 newsz)
   if(newsz < oldsz)
     return oldsz;
 
+  // user process's va should not be larger than PLIC (0x0c000000L)
+  if(newsz >= PLIC)
+    return 0; 
+
   oldsz = PGROUNDUP(oldsz);
   for(a = oldsz; a < newsz; a += PGSIZE){
     mem = kalloc();
@@ -270,6 +274,22 @@ uvmdealloc(pagetable_t pagetable, uint64 oldsz, uint64 newsz)
   if(PGROUNDUP(newsz) < PGROUNDUP(oldsz)){
     int npages = (PGROUNDUP(oldsz) - PGROUNDUP(newsz)) / PGSIZE;
     uvmunmap(pagetable, PGROUNDUP(newsz), npages, 1);
+  }
+
+  return newsz;
+}
+
+// 釋放 kernel page table 的空間時，不應釋放實際的物理地址，所以增加新的函式 kvmdealloc
+// 其功能與 uvmdealloc 相同，差別僅在 uvmunmap 的 do_free 輸入參數為 0
+uint64
+kvmdealloc(pagetable_t pagetable, uint64 oldsz, uint64 newsz)
+{
+  if(newsz >= oldsz)
+    return oldsz;
+
+  if(PGROUNDUP(newsz) < PGROUNDUP(oldsz)){
+    int npages = (PGROUNDUP(oldsz) - PGROUNDUP(newsz)) / PGSIZE;
+    uvmunmap(pagetable, PGROUNDUP(newsz), npages, 0);
   }
 
   return newsz;
@@ -341,6 +361,44 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
   return -1;
 }
 
+// 現在我們確保 kernel 不會有映射衝突的問題，接下來就是複製 user 地址的映射到進程的 kernel page table
+// 首先參考 uvmcopy 實作映射複製的函式，要特別注意兩點：
+// for 迴圈的起始地址必需為 page aligned，否則在某些情況下會多複製一頁，
+// 例如當 sz 大於一頁的大小，但 start + sz 只跨過一個頁
+// kernel 不能訪問帶有 PTE_U 的地址，必需將之清除
+int
+kvmcopyuvm(pagetable_t u_pagetable, pagetable_t k_pagetable, uint64 start, uint64 sz)
+{
+  pte_t *pte_u, *pte_k;
+  uint64 pa, i, aligned;
+  uint flags;
+
+  // make start page aligned to avoid remap
+  aligned = PGROUNDUP(start);
+
+  for(i = aligned; i < start + sz; i += PGSIZE){
+    if((pte_u = walk(u_pagetable, i, 0)) == 0)
+      panic("kvmcopyuvm: pte should exist");
+    if((*pte_u & PTE_V) == 0)
+      panic("kvmcopyuvm: page not present");
+    pa = PTE2PA(*pte_u);
+    flags = PTE_FLAGS(*pte_u) & (~PTE_U);
+
+    if ((pte_k = walk(k_pagetable, i, 1)) == 0)  // copy the pte to the same address at kernel page table
+      panic("kvmcopyuvm: walk fails");
+    *pte_k = PA2PTE(pa) | flags;
+    // 这里不能直接调用mappages，因为它会判断PTE_V，而k_pagetable
+    // if(mappages(k_pagetable, i, PGSIZE, pa, flags) != 0){
+    //   goto err;
+    // }
+  }
+  return 0;
+
+//  err:
+//   uvmunmap(k_pagetable, start, (i-start) / PGSIZE, 0);
+//   return -1;
+}
+
 // mark a PTE invalid for user access.
 // used by exec for the user stack guard page.
 void
@@ -385,6 +443,7 @@ copyout(pagetable_t pagetable, uint64 dstva, char *src, uint64 len)
 int
 copyin(pagetable_t pagetable, char *dst, uint64 srcva, uint64 len)
 {
+  /*
   uint64 n, va0, pa0;
 
   while(len > 0){
@@ -402,6 +461,10 @@ copyin(pagetable_t pagetable, char *dst, uint64 srcva, uint64 len)
     srcva = va0 + PGSIZE;
   }
   return 0;
+  */
+
+  // 使用 copyin_new 來取代 copyin
+  return copyin_new(pagetable, dst, srcva, len);
 }
 
 // Copy a null-terminated string from user to kernel.
@@ -411,6 +474,7 @@ copyin(pagetable_t pagetable, char *dst, uint64 srcva, uint64 len)
 int
 copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
 {
+  /*
   uint64 n, va0, pa0;
   int got_null = 0;
 
@@ -445,6 +509,9 @@ copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
   } else {
     return -1;
   }
+  */
+
+  return copyinstr_new(pagetable, dst, srcva, max);
 }
 
 // 需要在defs.h定义vmprint，才能供exec.c调用
@@ -501,6 +568,7 @@ kptinit() {
   ukvmmap(k_pagetable, VIRTIO0, VIRTIO0, PGSIZE, PTE_R | PTE_W);
 
   // CLINT
+  // user process 不需要 CLINT，因此初始化进程不需要映射
   ukvmmap(k_pagetable, CLINT, CLINT, 0x10000, PTE_R | PTE_W);
 
   // PLIC

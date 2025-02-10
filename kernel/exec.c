@@ -116,6 +116,11 @@ exec(char *path, char **argv)
   p->trapframe->sp = sp; // initial stack pointer
   proc_freepagetable(oldpagetable, oldsz);
 
+  // 續用原先的 page table，只要將原先的映射清除，再複製新的映射即可，節省記憶體空間又省去切換 page table 的麻煩
+  // we need to unmap kernel page table first to avoid remap
+  uvmunmap(p->k_pagetable, 0, oldsz/PGSIZE, 0);
+  kvmcopyuvm(p->pagetable, p->k_pagetable, 0, p->sz);
+
   // Implement vmprint function to print the first processs's pagetable
   // 第一个用户进程将会调用userinit，从而调用allocproc，调用allocpid提供pid
   // 而全局变量nextpid的默认值为1，因此这里判断的就是第一个用户进程
