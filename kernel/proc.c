@@ -18,10 +18,18 @@ struct spinlock pid_lock;
 extern void forkret(void);
 static void wakeup1(struct proc *chan);
 static void freeproc(struct proc *p);
+void proc_freekernelpagetable(struct proc *p);
+void freeprockernelpage(pagetable_t pagetable);
 
 extern char trampoline[]; // trampoline.S
 
 // initialize the proc table at boot time.
+// xv6 的調度器支持多核心與多進程，代表同一時間可能有多個核心與進程在 kernel space 中，
+// 而原先所有進程共享一個 kernel page table，因此 xv6 在初始化進程時，
+// 必需替每個進程都配置對應的 kernel stack，並映射到不同的物理地址確保隔離性
+// 現在每個進程都有自己的 kernel page table，
+// 而每個進程的 kernel stack 都可以透過各自的 kernel page table 來尋址，
+// 這代表我們可以將不同進程的 kernel stack 都放在同一個虛擬地址，只要映射到不同的物理地址即可
 void
 procinit(void)
 {
@@ -31,17 +39,23 @@ procinit(void)
   for(p = proc; p < &proc[NPROC]; p++) {
       initlock(&p->lock, "proc");
 
+      // 原先為每個進程配置 kernel stack 並於 kernel_pagetable 新增映射關係
+      // 最終 procinit 僅留下配置 kernel stack 虛擬地址的部份，
+      // 並將所有進程 kstack 的虛擬地址都配置到固定的位置
       // Allocate a page for the process's kernel stack.
       // Map it high in memory, followed by an invalid
       // guard page.
-      char *pa = kalloc();
-      if(pa == 0)
-        panic("kalloc");
+      // char *pa = kalloc();
+      // if(pa == 0)
+      //   panic("kalloc");
       uint64 va = KSTACK((int) (p - proc));
-      kvmmap(va, (uint64)pa, PGSIZE, PTE_R | PTE_W);
+      // kvmmap(va, (uint64)pa, PGSIZE, PTE_R | PTE_W);
       p->kstack = va;
   }
-  kvminithart();
+  // 原先 kvminithart 的功能為載入更新後的 kernel_pagetable
+  // 但進程的 kernel page table 將在 allocproc 配置進程時動態創建及載入
+  // 所以 kvminithart 也可以註解掉
+  // kvminithart();
 }
 
 // Must be called with interrupts disabled,
@@ -121,6 +135,21 @@ found:
     return 0;
   }
 
+  // produce a kernel page table for a new process
+  p->k_pagetable = kptinit();
+  if (p->pagetable == 0 || p->k_pagetable == 0) {
+    freeproc(p);
+    release(&p->lock);
+    return 0;
+  }
+  // map kstack to physical address and store in process's kernel table
+  char *pa = kalloc();
+  if(pa == 0)
+    panic("kalloc");
+  uint64 va = KSTACK((int) (p - proc));
+  ukvmmap(p->k_pagetable, va, (uint64)pa, PGSIZE, PTE_R | PTE_W);
+  p->kstack = va;
+
   // Set up new context to start executing at forkret,
   // which returns to user space.
   memset(&p->context, 0, sizeof(p->context));
@@ -141,6 +170,11 @@ freeproc(struct proc *p)
   p->trapframe = 0;
   if(p->pagetable)
     proc_freepagetable(p->pagetable, p->sz);
+
+  // 在釋放進程的時候，必需同時釋放進程的 kernel page table
+  if (p->k_pagetable)
+    proc_freekernelpagetable(p);
+
   p->pagetable = 0;
   p->sz = 0;
   p->pid = 0;
@@ -193,6 +227,43 @@ proc_freepagetable(pagetable_t pagetable, uint64 sz)
   uvmunmap(pagetable, TRAMPOLINE, 1, 0);
   uvmunmap(pagetable, TRAPFRAME, 1, 0);
   uvmfree(pagetable, sz);
+}
+
+// 参考uvmfree函数，实现proc_freekernelpagetable函数
+// 第一步先將 kernel stack 的映射取消，並釋放對應的物理地址。
+// 第二步則是將 kernel page table 本身釋放掉，
+// 要注意進程的 kernel page table 僅提供地址的映射關係，
+// 不該管理實際物理 page 的創建與釋放 (也避免將 I/O 設備等映射釋放掉)
+// Free a process's kernel page table and physical memory for kstack,
+// should not free physical memory for I/O devices
+void
+proc_freekernelpagetable(struct proc *p)
+{
+  // free kstack
+  uvmunmap(p->k_pagetable, p->kstack, 1, 1);
+
+  // free page table
+  freeprockernelpage(p->k_pagetable);
+}
+
+// 参考freewalk函数，实现freeprockernelpage函数
+// Recursively free page-table pages.
+// All leaf mappings must already have been removed.
+void
+freeprockernelpage(pagetable_t pagetable)
+{
+  for(int i = 0; i < 512; i++){
+    pte_t pte = pagetable[i];
+    if((pte & PTE_V) && (pte & (PTE_R|PTE_W|PTE_X)) == 0){
+      // this PTE points to a lower-level page table.
+      uint64 child = PTE2PA(pte);
+      freeprockernelpage((pagetable_t)child);
+      pagetable[i] = 0;
+    } else if(pte & PTE_V){
+        pagetable[i] = 0;
+    }
+  }
+  kfree((void*)pagetable);
 }
 
 // a user program that calls exec("/init")
@@ -473,8 +544,14 @@ scheduler(void)
         // before jumping back to us.
         p->state = RUNNING;
         c->proc = p;
+        // 在調度器將進程交給 CPU 執行前，必需載入進程的 kernel page table
+        // switch to user kernel pagetable
+        w_satp(MAKE_SATP(p->k_pagetable));
+        sfence_vma();
         swtch(&c->context, &p->context);
-
+        // 調度完成後再載回 kernel 自己的 page table
+        // switch back to kernel_pagetable
+        kvminithart(); 
         // Process is done running for now.
         // It should have changed its p->state before coming back.
         c->proc = 0;
