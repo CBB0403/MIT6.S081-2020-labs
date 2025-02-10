@@ -138,6 +138,7 @@ kvmpa(uint64 va)
   // kvmpa 改用進程自己的 kernel page table，來轉換位於 kernel stack 的虛擬地址
   struct proc *p = myproc();
   pte = walk(p->k_pagetable, va, 0);
+  
   if(pte == 0)
     panic("kvmpa");
   if((*pte & PTE_V) == 0)

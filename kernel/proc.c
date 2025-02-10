@@ -137,7 +137,7 @@ found:
 
   // produce a kernel page table for a new process
   p->k_pagetable = kptinit();
-  if (p->pagetable == 0 || p->k_pagetable == 0) {
+  if (p->k_pagetable == 0) {
     freeproc(p);
     release(&p->lock);
     return 0;
